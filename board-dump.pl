@@ -166,6 +166,8 @@ async{my $local_board=SPAWNER->($board_name);while(1){
 		
 		debug ERROR,"Couldn't insert posts into database: ".$local_board->errstr
 			if $local_board->error;
+	
+		$ref->{dontpurge} = 0;
 	}
 	sleep 1;
 }};
@@ -211,7 +213,12 @@ async{
 				my($old,$new,$must_refresh)=(0,0,0);
 
 				# We check for any posts that got deleted.
-				mark_deletes $thread,$_ and $must_refresh=1;
+				#mark_deletes $thread,$_ and $must_refresh=1;
+				
+				# We politely ask the Grim Reaper to let this one live.
+				# (until we are done with it)
+				$thread->{ref}->{dontpurge} = 1;
+
 				for(@posts){
 					# Get the same post from the previous encountered thread
 					my $post=find_post($thread->{ref},$_->{num});
@@ -235,7 +242,10 @@ async{
 				$thread->{lasthit}=time;
 				
 				# No new posts
-				next if $old!=0 and $new==0;
+				if($old!=0 and $new==0) {
+					$thread->{ref}->{dontpurge} = 0;
+					next;
+				}
 				
 				debug TALK,"$_->{num}: ".($pageno==0?"front page":"page $pageno")." update";
 			
@@ -309,7 +319,9 @@ async{my $board=$board_spawner->();while(1){
 	
 	debug TALK,"$_: ".($threads{$_}?"updated":"new");
 
-	mark_deletes $threads{$_},$thread;
+	# We just got the thread, so give it a chance to live.
+	$thread->{dontpurge} = 1;	
+#	mark_deletes $threads{$_},$thread;
 	$threads{$_}=shared_clone({
 		num		 => $_,
 		lasthit	 => time,
@@ -324,6 +336,55 @@ finished:
 		delete $busythreads{$_};
 	}
 }} foreach 1..$settings->{"new-thread-threads"};
+
+sub clean_thread($) {
+	my($tnum) = shift;
+	my $ref = $threads{$tnum}->{ref};
+
+#	print "purging $tnum, dp is: " . $ref->{dontpurge} . "\n";
+#	delete $threads{$num};
+#	return;
+
+	my @np = ();
+	my $np = \@np;
+    for(@{$ref->{posts}}) {
+        my $post = $_;
+		my($num, $deleted) = ($post->{num}, $post->{deleted});
+		#$_ = ();
+		push @np, {num => $num, deleted => $deleted};
+        #for(keys %$_) {
+        #    delete $post->{$_} if not ($_ eq 'num' or $_ eq 'deleted');
+        #}
+	}
+	#print Dumper \@np;
+	my %newref = ( 
+		omposts => $ref->{omposts},
+		num => $ref->{num},
+		omimages => $ref->{omimages},
+	);
+
+	my $newref = \%newref;
+	$newref->{posts} = $np;
+	delete $threads{$tnum};
+	$threads{$tnum} = shared_clone($newref);
+#	print Dumper $ref;
+#	die;
+}
+
+async{while(1){
+	my $ref;
+    {
+        for (keys %threads) {
+			my $ref = $threads{$_}->{ref};
+#			print "$_ " . $ref->{dontpurge} . " ";
+#			clean_thread($_) if not $ref->{dontpurge};
+
+		}
+    }
+
+    sleep 2;
+	
+}};
 
 # check for old threads to rebuild
 while(1){
